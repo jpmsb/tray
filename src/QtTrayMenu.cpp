@@ -292,9 +292,8 @@ void QtTrayMenu::onShowMenu() const {
     return;
   }
   if (QMenu *menu = trayIcon->contextMenu(); menu != nullptr) {
-    // Due to QTBUG-139921 this is currently not working on Linux/Wayland
-    // with Qt-6.9+ unless menu has a transient parent (which we do not have here).
-    menu->popup(QCursor::pos());
+    // QTBUG-139921: popup() fails on Linux/Wayland with Qt 6.9+ without a transient parent.
+    menu->exec(QCursor::pos());
   }
 }
 
