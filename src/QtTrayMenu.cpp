@@ -3,12 +3,14 @@
  * @brief Definitions for Qt tray menu implemenation
  */
 // standard includes
+#include <algorithm>
 #include <filesystem>
 
 // qt includes
 #include <QApplication>
 #include <QCursor>
 #include <QDebug>
+#include <QFontMetrics>
 #include <QMouseEvent>
 #include <QStyle>
 
@@ -19,6 +21,76 @@ namespace {
   int defaultArgc = 1;  // NOSONAR(cpp:S5421): This is required for QApplication's argc/argv constructor
   char defaultArgv0[] = "TrayMenuApp";  // NOSONAR(cpp:S5421): This is required for QApplication's argc/argv constructor
   char *defaultArgv[] = {defaultArgv0, nullptr};  // NOSONAR(cpp:S5421,cpp:S5954): This is required for QApplication's argc/argv constructor
+
+  constexpr char k_tray_min_width_property[] = "tray_min_width";
+
+  /**
+   * @brief Trailing padding that reserves space for the native submenu indicator.
+   *
+   * @return Figure spaces wide enough to keep Qt's submenu arrow off the label text.
+   */
+  QString submenu_text_padding() {
+    return QString(2, QChar(0x2007));
+  }
+
+  /**
+   * @brief Apply the computed minimum width when a menu is shown.
+   *
+   * @param menu Menu about to be displayed.
+   */
+  void apply_menu_width_on_show(QMenu *menu) {
+    if (!menu) {
+      return;
+    }
+
+    const int min_width = menu->property(k_tray_min_width_property).toInt();
+    if (min_width <= 0) {
+      return;
+    }
+
+    const int target_width = std::max(min_width, menu->sizeHint().width());
+    menu->setMinimumWidth(target_width);
+  }
+
+  /**
+   * @brief Reserve horizontal space for submenu indicators and long labels.
+   *
+   * @param menu Menu to adjust.
+   */
+  void adjustMenuLayout(QMenu *menu) {
+    if (!menu) {
+      return;
+    }
+
+    const QFontMetrics fm {menu->fontMetrics()};
+    const QStyle *style = menu->style();
+    const int h_margin = style->pixelMetric(QStyle::PM_MenuHMargin, nullptr, menu) * 2;
+
+    int min_width = 0;
+
+    for (QAction *action : menu->actions()) {
+      if (action->isSeparator()) {
+        continue;
+      }
+
+      // Submenu labels already include trailing figure-space padding in createMenu().
+      const int text_width = fm.boundingRect(action->text()).width();
+      int item_width = text_width + h_margin;
+
+      if (QMenu *child = action->menu()) {
+        adjustMenuLayout(child);
+      }
+
+      min_width = std::max(min_width, item_width);
+    }
+
+    menu->setProperty(k_tray_min_width_property, min_width);
+    menu->setMinimumWidth(min_width);
+
+    QObject::connect(menu, &QMenu::aboutToShow, menu, [menu]() {
+      apply_menu_width_on_show(menu);
+    }, Qt::UniqueConnection);
+  }
 }  // namespace
 
 QtTrayMenu::QtTrayMenu(QObject *parent, const bool debug):
@@ -164,6 +236,7 @@ void QtTrayMenu::updateMenu(struct tray_menu *items) {
   trayIcon->setContextMenu(newTrayTopMenu);
   // Fill new tray menu instance
   createMenu(items, newTrayTopMenu);
+  adjustMenuLayout(newTrayTopMenu);
   // Clear old, unused trayTopMenu instance
   if (trayTopMenu != nullptr) {
     trayTopMenu->clear();  // Remove all actions
@@ -178,18 +251,18 @@ void QtTrayMenu::createMenu(struct tray_menu *items, QMenu *menu) {
     if (strcmp(items->text, "-") == 0) {
       menu->addSeparator();
     } else {
-      auto *action = new QAction(QString::fromUtf8(items->text), menu);  // NOSONAR(cpp:S5025) - Qt has its own integrated memory management
-      action->setDisabled(items->disabled == 1);
-      action->setCheckable(items->checkbox == 1);
-      action->setChecked(items->checked == 1);
-      action->setProperty("tray_menu_item", QVariant::fromValue((void *) items));
-      connect(action, &QAction::triggered, this, &QtTrayMenu::onMenuItemTriggered);
       if (items->submenu) {
-        const auto submenu = new QMenu(menu);
-        createMenu(items->submenu, submenu);
-        action->setMenu(submenu);
+        const auto sub_menu = menu->addMenu(QString::fromUtf8(items->text) + submenu_text_padding());
+        createMenu(items->submenu, sub_menu);
+      } else {
+        auto *action = new QAction(QString::fromUtf8(items->text), menu);  // NOSONAR(cpp:S5025) - Qt has its own integrated memory management
+        action->setDisabled(items->disabled == 1);
+        action->setCheckable(items->checkbox == 1);
+        action->setChecked(items->checked == 1);
+        action->setProperty("tray_menu_item", QVariant::fromValue((void *) items));
+        connect(action, &QAction::triggered, this, &QtTrayMenu::onMenuItemTriggered);
+        menu->addAction(action);
       }
-      menu->addAction(action);
     }
     items++;
   }
