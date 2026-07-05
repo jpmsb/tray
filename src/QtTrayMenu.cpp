@@ -23,6 +23,7 @@ namespace {
   char *defaultArgv[] = {defaultArgv0, nullptr};  // NOSONAR(cpp:S5421,cpp:S5954): This is required for QApplication's argc/argv constructor
 
   constexpr char k_tray_min_width_property[] = "tray_min_width";
+  constexpr char k_tray_show_connected_property[] = "tray_show_connected";
 
   /**
    * @brief Trailing padding that reserves space for the native submenu indicator.
@@ -87,9 +88,13 @@ namespace {
     menu->setProperty(k_tray_min_width_property, min_width);
     menu->setMinimumWidth(min_width);
 
-    QObject::connect(menu, &QMenu::aboutToShow, menu, [menu]() {
-      apply_menu_width_on_show(menu);
-    }, Qt::UniqueConnection);
+    if (!menu->property(k_tray_show_connected_property).toBool()) {
+      menu->setProperty(k_tray_show_connected_property, true);
+
+      QObject::connect(menu, &QMenu::aboutToShow, menu, [menu]() {
+        apply_menu_width_on_show(menu);
+      });
+    }
   }
 }  // namespace
 
