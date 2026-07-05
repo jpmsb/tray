@@ -141,6 +141,17 @@ namespace tray_linux {
     if (tray->notification_text == nullptr || std::string(tray->notification_text).empty()) {
       return;
     }
+
+    // Prefer Qt tray messages on Linux because libnotify can fail silently off the Qt thread.
+    if (qt_tray_menu != nullptr && QtTrayMenu::supportsMessages()) {
+      if (tray->notification_icon) {
+        qt_tray_menu->showMessage(tray->notification_title, tray->notification_text, tray->notification_icon, tray->notification_cb);
+      } else {
+        qt_tray_menu->showMessage(tray->notification_title, tray->notification_text, tray->notification_cb);
+      }
+      return;
+    }
+
     // Try to notify using libnotify
     if (notify_is_initted()) {
       if (!notifications.empty()) {
