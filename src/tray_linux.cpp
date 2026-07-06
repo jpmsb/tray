@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -134,6 +135,60 @@ namespace tray_linux {
   }
 
   /**
+   * @brief libnotify action callback that forwards to notification_data::cb.
+   * @param notification The libnotify notification object.
+   * @param action The action identifier that was activated.
+   * @param user_data Pointer to notification_data.
+   */
+  void libnotify_action_cb(NotifyNotification *notification, char *action, gpointer user_data) {
+    auto *data = static_cast<notification_data *>(user_data);
+    if (data != nullptr && data->cb != nullptr) {
+      data->cb();
+    }
+  }
+
+  /**
+   * @brief Show a notification through libnotify.
+   * @param tray Tray structure containing notification information.
+   * @return true when a libnotify notification was queued.
+   */
+  bool show_libnotify_notification(struct tray *tray) {
+    if (!notify_is_initted()) {
+      return false;
+    }
+
+    if (!notifications.empty()) {
+      acknowledge_notifications();
+    }
+    std::scoped_lock lock(notifications_mutex);
+    std::filesystem::path notification_icon = tray->notification_icon != nullptr ? tray->notification_icon : tray->icon;
+    if (std::filesystem::exists(notification_icon)) {
+      notification_icon = std::filesystem::absolute(notification_icon);
+    }
+    auto notification = std::make_shared<struct notification_data>();
+    notification->obj = notify_notification_new(tray->notification_title, tray->notification_text, notification_icon.c_str());
+    if (notification->obj == nullptr || !NOTIFY_IS_NOTIFICATION(notification->obj)) {
+      return false;
+    }
+
+    if (tray->notification_cb != nullptr) {
+      notification->cb = tray->notification_cb;
+      notify_notification_add_action(
+        notification->obj,
+        "default",
+        "Default",
+        libnotify_action_cb,
+        notification.get(),
+        nullptr
+      );
+    }
+
+    notifications.emplace_back(notification);
+    async_tray_notification_show_(notification);
+    return true;
+  }
+
+  /**
    * @brief Show tray notification via desktop-independent interface
    * @param tray Tray structure containing notification information
    */
@@ -142,7 +197,12 @@ namespace tray_linux {
       return;
     }
 
-    // Prefer Qt tray messages on Linux because libnotify can fail silently off the Qt thread.
+    // Clickable notifications must use libnotify: QSystemTrayIcon::messageClicked is unreliable on Linux/Wayland.
+    if (tray->notification_cb != nullptr && show_libnotify_notification(tray)) {
+      return;
+    }
+
+    // Prefer Qt tray messages for notifications without actions because libnotify can fail silently off the Qt thread.
     if (qt_tray_menu != nullptr && QtTrayMenu::supportsMessages()) {
       if (tray->notification_icon) {
         qt_tray_menu->showMessage(tray->notification_title, tray->notification_text, tray->notification_icon, tray->notification_cb);
@@ -152,29 +212,13 @@ namespace tray_linux {
       return;
     }
 
-    // Try to notify using libnotify
-    if (notify_is_initted()) {
-      if (!notifications.empty()) {
-        acknowledge_notifications();
-      }
-      std::scoped_lock lock(notifications_mutex);
-      std::filesystem::path notification_icon = tray->notification_icon != nullptr ? tray->notification_icon : tray->icon;
-      if (std::filesystem::exists(notification_icon)) {
-        // Use absolute path for filesystem icon files, not a relative one
-        notification_icon = std::filesystem::absolute(notification_icon);
-      }
-      auto notification = std::make_shared<struct notification_data>();
-      notification->obj = notify_notification_new(tray->notification_title, tray->notification_text, notification_icon.c_str());
-      if (notification->obj != nullptr && NOTIFY_IS_NOTIFICATION(notification->obj)) {
-        if (tray->notification_cb != nullptr) {
-          notification->cb = tray->notification_cb;
-          notify_notification_add_action(notification->obj, "default", "Default", NOTIFY_ACTION_CALLBACK(tray->notification_cb), nullptr, nullptr);
-        }
-        notifications.emplace_back(notification);
-        async_tray_notification_show_(notification);
-      }
-    } else if (qt_tray_menu != nullptr && QtTrayMenu::supportsMessages()) {
-      // Fallback to QtTrayMenu notification
+    // Fallback to libnotify when Qt tray messages are unavailable.
+    if (show_libnotify_notification(tray)) {
+      return;
+    }
+
+    // Last resort: Qt tray messages when libnotify is unavailable.
+    if (qt_tray_menu != nullptr && QtTrayMenu::supportsMessages()) {
       qt_tray_menu->showMessage(tray->notification_title, tray->notification_text, tray->notification_icon, tray->notification_cb);
     }
   }
