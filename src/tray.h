@@ -19,6 +19,14 @@ extern "C" {
   struct tray_menu;
 
   /**
+   * @brief Named action button shown on a desktop notification when supported.
+   */
+  struct tray_notification_action {
+    const char *text;  ///< Button label to display.
+    void (*cb)(void);  ///< Callback to invoke when the action is activated.
+  };
+
+  /**
    * @brief Tray icon.
    */
   struct tray {
@@ -28,6 +36,7 @@ extern "C" {
     const char *notification_text;  ///< Text to display in the notification.
     const char *notification_title;  ///< Title to display in the notification.
     void (*notification_cb)();  ///< Callback to invoke when the notification is clicked.
+    struct tray_notification_action *notification_actions;  ///< NULL-terminated list of notification action buttons.
     void (*cb)(struct tray *);  ///< Callback for left click, leave null to just open menu
     struct tray_menu *menu;  ///< Menu items.
     const int iconPathCount;  ///< Number of icon paths.
