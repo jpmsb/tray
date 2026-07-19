@@ -31,9 +31,13 @@ namespace tray_linux {
      */
     NotifyNotification *obj = nullptr;
     /**
-     * @brief Notification callback
+     * @brief Notification callback for the default action
      */
     void (*cb)() = nullptr;
+    /**
+     * @brief Named notification actions (id + callback), kept alive for libnotify.
+     */
+    std::vector<std::pair<std::string, void (*)()>> actions;
     /**
      * @brief Notification shown indicator
      */
@@ -135,15 +139,31 @@ namespace tray_linux {
   }
 
   /**
-   * @brief libnotify action callback that forwards to notification_data::cb.
+   * @brief libnotify action callback that forwards to notification_data callbacks.
    * @param notification The libnotify notification object.
    * @param action The action identifier that was activated.
    * @param user_data Pointer to notification_data.
    */
   void libnotify_action_cb(NotifyNotification *notification, char *action, gpointer user_data) {
     auto *data = static_cast<notification_data *>(user_data);
-    if (data != nullptr && data->cb != nullptr) {
-      data->cb();
+    if (data == nullptr || action == nullptr) {
+      return;
+    }
+
+    if (std::strcmp(action, "default") == 0) {
+      if (data->cb != nullptr) {
+        data->cb();
+      }
+      return;
+    }
+
+    for (const auto &[action_id, action_cb] : data->actions) {
+      if (action_id == action) {
+        if (action_cb != nullptr) {
+          action_cb();
+        }
+        return;
+      }
     }
   }
 
@@ -183,6 +203,22 @@ namespace tray_linux {
       );
     }
 
+    if (tray->notification_actions != nullptr) {
+      for (int i = 0; tray->notification_actions[i].text != nullptr; ++i) {
+        notification->actions.emplace_back(std::string("action_") + std::to_string(i), tray->notification_actions[i].cb);
+      }
+      for (std::size_t i = 0; i < notification->actions.size(); ++i) {
+        notify_notification_add_action(
+          notification->obj,
+          notification->actions[i].first.c_str(),
+          tray->notification_actions[i].text,
+          libnotify_action_cb,
+          notification.get(),
+          nullptr
+        );
+      }
+    }
+
     notifications.emplace_back(notification);
     async_tray_notification_show_(notification);
     return true;
@@ -197,8 +233,10 @@ namespace tray_linux {
       return;
     }
 
+    const bool has_actions = tray->notification_actions != nullptr && tray->notification_actions[0].text != nullptr;
+
     // Clickable notifications must use libnotify: QSystemTrayIcon::messageClicked is unreliable on Linux/Wayland.
-    if (tray->notification_cb != nullptr && show_libnotify_notification(tray)) {
+    if ((tray->notification_cb != nullptr || has_actions) && show_libnotify_notification(tray)) {
       return;
     }
 
