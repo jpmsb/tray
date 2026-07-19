@@ -325,6 +325,9 @@ void tray_update(struct tray *tray) {
   }
   if (can_show_notifications == 1 && tray->notification_cb != NULL) {
     notification_cb = tray->notification_cb;
+  } else if (can_show_notifications == 1 && tray->notification_actions != NULL && tray->notification_actions[0].text != NULL) {
+    // Balloon notifications only support a single click callback; use the first action.
+    notification_cb = tray->notification_actions[0].cb;
   }
 
   Shell_NotifyIconW(NIM_MODIFY, &nid);
