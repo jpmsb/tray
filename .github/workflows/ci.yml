@@ -30,11 +30,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Release
         id: setup_release
-        uses: LizardByte/actions/actions/release_setup@200eaeb897a2b065a65cb6f16b41077432007490  # v2026.605.34721
+        uses: LizardByte/actions/actions/release_setup@39c468549cfb87ccb917e5e5342e18abc926dc48  # v2026.909.30231
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -52,19 +52,21 @@ jobs:
         include:
           - os: macos-latest
             shell: "bash"
-            qt_version: ''
+            qt_version: '6'
           - os: ubuntu-latest
             shell: "bash"
             qt_version: '5'
           - os: ubuntu-latest
             shell: "bash"
             qt_version: '6'
-          - os: windows-latest
+          # Windows Server 2022 renders QSystemTrayIcon notifications. The newer
+          # windows-latest image suppresses them in its interactive session.
+          - os: windows-2022
             shell: "msys2 {0}"
-            qt_version: ''
+            qt_version: '6'
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: recursive
 
@@ -104,9 +106,7 @@ jobs:
 
       - name: Setup virtual desktop
         if: runner.os == 'Linux'
-        uses: LizardByte/actions/actions/virtual_desktop@200eaeb897a2b065a65cb6f16b41077432007490  # v2026.605.34721
-        with:
-          environment: mate
+        uses: LizardByte/actions/actions/virtual_desktop@39c468549cfb87ccb917e5e5342e18abc926dc48  # v2026.909.30231
 
       - name: Setup Dependencies macOS
         if: runner.os == 'macOS'
@@ -118,43 +118,14 @@ jobs:
             "imagemagick"
             "ninja"
             "node"
+            "qtbase"
+            "qtsvg"
           )
           brew install "${dependencies[@]}"
 
-      - name: Fix macOS screen recording permissions
+      - name: Configure macOS screen recording
         if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-
-          configure_system_tccdb() {
-            local values=$1
-            local dbPath="/Library/Application Support/com.apple.TCC/TCC.db"
-            local sqlQuery="INSERT OR IGNORE INTO access VALUES($values);"
-            sudo sqlite3 "$dbPath" "$sqlQuery"
-          }
-
-          configure_user_tccdb() {
-            local values=$1
-            local dbPath="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
-            local sqlQuery="INSERT OR IGNORE INTO access VALUES($values);"
-            sqlite3 "$dbPath" "$sqlQuery"
-          }
-
-          systemValuesArray=(
-            "'kTCCServiceScreenCapture','/bin/bash',1,2,0,1,NULL,NULL,NULL,'UNUSED',NULL,0,1599831148"
-          )
-          for values in "${systemValuesArray[@]}"; do
-            configure_system_tccdb "$values,NULL,NULL,'UNUSED',${values##*,}"
-          done
-
-          userValuesArray=(
-            "'kTCCServiceScreenCapture','/bin/bash',1,2,0,1,NULL,NULL,NULL,'UNUSED',NULL,0,1583997993"
-          )
-          for values in "${userValuesArray[@]}"; do
-            configure_user_tccdb "$values,NULL,NULL,'UNUSED',${values##*,}"
-          done
-
-          echo "macOS TCC permissions configured."
+        uses: ./.github/actions/configure-macos-screen-recording
 
       - name: Setup Dependencies Windows
         if: runner.os == 'Windows'
@@ -171,15 +142,17 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-nodejs
             mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-svg
 
       - name: Setup python
         id: setup-python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           enable-cache: true
 
@@ -218,39 +191,12 @@ jobs:
         working-directory: build/tests
         run: ./test_tray --gtest_color=yes --gtest_filter=TrayTest.TestTrayInit
 
-      - name: Configure Windows
+      - name: Configure Windows tray screenshots
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          echo "::group::Enable all tray icons"
-          Invoke-WebRequest `
-            -Uri "https://raw.githubusercontent.com/paulmann/windows-show-all-tray-icons/main/Enable-AllTrayIcons.ps1" `
-            -OutFile "Enable-AllTrayIcons.ps1"
-          .\Enable-AllTrayIcons.ps1 -Action Enable -Force  # Enable with comprehensive method (resets ALL icon settings)
-          echo "::endgroup::"
-
-          echo "::group::Disable Do Not Disturb"
-          Add-Type -AssemblyName System.Windows.Forms
-          Start-Process "ms-settings:notifications"
-          Start-Sleep -Seconds 2
-          [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
-          [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
-          [System.Windows.Forms.SendKeys]::SendWait(" ")
-          echo "::endgroup::"
-
-          echo "::group::Minimize all windows"
-          $shell = New-Object -ComObject Shell.Application
-          $shell.MinimizeAll()
-          echo "::endgroup::"
-
-          echo "::group::Set Date - Hack for Quiet Time"
-          $newDate = (Get-Date).AddHours(2)
-          Set-Date -Date $newDate
-          echo "::endgroup::"
+        uses: ./.github/actions/configure-windows-tray-screenshots
 
       - name: Run tests
         id: test
-        # TODO: tests randomly hang on Linux, https://github.com/LizardByte/tray/issues/45
         timeout-minutes: 3
         working-directory: build/tests
         env:
@@ -342,7 +288,7 @@ jobs:
     steps:
       - name: Create/Update GitHub Release
         if: needs.setup_release.outputs.publish_release == 'true'
-        uses: LizardByte/actions/actions/release_create@200eaeb897a2b065a65cb6f16b41077432007490  # v2026.605.34721
+        uses: LizardByte/actions/actions/release_create@39c468549cfb87ccb917e5e5342e18abc926dc48  # v2026.909.30231
         with:
           allowUpdates: false
           artifacts: ''

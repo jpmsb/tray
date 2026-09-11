@@ -5,11 +5,20 @@
 #ifndef TRAYMENU_H
 #define TRAYMENU_H
 
+// standard includes
+#include <array>
+#include <memory>
+
 // qt includes
 #include <QMenu>
 #include <QObject>
 #include <QString>
 #include <QSystemTrayIcon>
+
+// conditional includes
+#ifdef TRAY_ENABLE_TEST_HOOKS
+  #include <QPoint>
+#endif
 
 // local includes
 #include "tray.h"
@@ -102,6 +111,25 @@ public:
   void clickMessage() const;
 
   /**
+   * @brief Clear the stored popup message callback
+   */
+  void clearMessageCallback() const;
+
+#ifdef TRAY_ENABLE_TEST_HOOKS
+  /**
+   * @brief Move the mouse cursor to the center of the tray icon.
+   * @return true if the tray icon has valid screen geometry and the cursor was moved
+   */
+  bool positionMouseOverIcon();
+
+  /**
+   * @brief Restore the mouse cursor position saved by positionMouseOverIcon().
+   * @return true if a saved position existed and the cursor was restored
+   */
+  bool restoreMousePosition();
+#endif
+
+  /**
    * @brief Check if QtTrayMenu supports messages
    * @return true if messages can be shown
    */
@@ -130,14 +158,21 @@ private:
   void createNotification();
   void updateMenu(struct tray_menu *items);
   QIcon lookupIcon(QString icon) const;
+  int defaultArgc = 1;
+  std::array<char, 12> defaultArgv0 {'T', 'r', 'a', 'y', 'M', 'e', 'n', 'u', 'A', 'p', 'p', '\0'};
+  std::array<char *, 2> defaultArgv {defaultArgv0.data(), nullptr};
   QApplication *app = nullptr;
-  QSystemTrayIcon *trayIcon = nullptr;
-  QMenu *trayTopMenu = nullptr;
+  std::unique_ptr<QSystemTrayIcon> trayIcon;
+  std::unique_ptr<QMenu> trayTopMenu;
   struct tray *trayStruct = nullptr;
   bool running = false;
   bool blockingEventLoop = false;
-  struct tray_menu *getTrayMenuItem(QAction *action);
-  std::function<void()> notificationCallback = nullptr;
+  struct tray_menu *getTrayMenuItem(const QAction *action);
+  mutable std::function<void()> notificationCallback = nullptr;
+#ifdef TRAY_ENABLE_TEST_HOOKS
+  QPoint savedMousePosition;
+  bool mousePositionSaved = false;
+#endif
 
 private slots:
   void onExitRequested();

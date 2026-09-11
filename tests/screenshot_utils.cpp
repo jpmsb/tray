@@ -9,6 +9,11 @@
 #include <string>
 #include <thread>
 #include <vector>
+#if defined(__linux__) || defined(__APPLE__)
+  // qt includes
+  #include <QImage>
+  #include <QString>
+#endif
 #ifdef _WIN32
   #ifndef NOMINMAX
     #define NOMINMAX
@@ -21,7 +26,14 @@
 // clang-format on
 #endif
 
+// lib includes
+#include <lizardbyte/common/env.h>
+
 namespace {
+  bool capture_full_screen() {
+    return lizardbyte::common::is_github_actions() && lizardbyte::common::get_env("RUNNER_DEBUG") == "1";
+  }
+
 #if defined(__linux__) || defined(__APPLE__)
   std::string quote_shell_path(const std::filesystem::path &path) {
     const std::string input = path.string();
@@ -37,6 +49,42 @@ namespace {
     }
     output.push_back('"');
     return output;
+  }
+
+  bool crop_to_top_right_quadrant(const std::filesystem::path &file) {
+    const QString imagePath = QString::fromUtf8(file.u8string().c_str());
+    const QImage image(imagePath);
+    if (image.isNull() || image.width() < 2 || image.height() < 2) {
+      std::cerr << "Screenshot dimensions invalid" << std::endl;
+      return false;
+    }
+
+    const int width = image.width() / 2;
+    const int height = image.height() / 2;
+    const QImage quadrant = image.copy(image.width() - width, 0, width, height);
+    if (!quadrant.save(imagePath, "PNG")) {
+      std::cerr << "Failed to crop " << file << std::endl;
+      return false;
+    }
+    return true;
+  }
+
+  bool crop_to_bottom_right_quadrant(const std::filesystem::path &file) {
+    const QString imagePath = QString::fromUtf8(file.u8string().c_str());
+    const QImage image(imagePath);
+    if (image.isNull() || image.width() < 2 || image.height() < 2) {
+      std::cerr << "Screenshot dimensions invalid" << std::endl;
+      return false;
+    }
+
+    const int width = image.width() / 2;
+    const int height = image.height() / 2;
+    const QImage quadrant = image.copy(image.width() - width, image.height() - height, width, height);
+    if (!quadrant.save(imagePath, "PNG")) {
+      std::cerr << "Failed to crop " << file << std::endl;
+      return false;
+    }
+    return true;
   }
 #endif
 
@@ -56,11 +104,7 @@ namespace {
     static std::once_flag dpiFlag;
     static bool dpiAware = false;
     std::call_once(dpiFlag, []() {
-      using SetProcessDPIAwareFn = BOOL(WINAPI *)();
-      auto *fn = reinterpret_cast<SetProcessDPIAwareFn>(  // NOSONAR(cpp:S3630) - required for GetProcAddress function pointer cast
-        GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDPIAware")
-      );
-      dpiAware = fn == nullptr || fn() == TRUE;
+      dpiAware = SetProcessDPIAware() == TRUE;
     });
     return dpiAware;
   }
@@ -89,25 +133,33 @@ namespace {
 
 namespace screenshot {
 
-  inline std::filesystem::path &output_root_ref() {
-    static std::filesystem::path g_outputRoot;  // NOSONAR(cpp:S6018) - function-local static is intentional for lazy, TU-local initialization
-    return g_outputRoot;
-  }
+  class ScreenshotState {
+  public:
+    static std::filesystem::path &outputRoot() {
+      return outputRoot_;
+    }
+
+  private:
+    inline static std::filesystem::path outputRoot_;
+  };
 
   void initialize(const std::filesystem::path &rootDir) {
-    output_root_ref() = rootDir / "screenshots";
+    ScreenshotState::outputRoot() = rootDir / "screenshots";
     std::error_code ec;
-    std::filesystem::create_directories(output_root_ref(), ec);
+    std::filesystem::create_directories(ScreenshotState::outputRoot(), ec);
   }
 
   std::filesystem::path output_root() {
-    return output_root_ref();
+    return ScreenshotState::outputRoot();
   }
 
 #ifdef __APPLE__
   static bool capture_macos(const std::filesystem::path &file, const Options &) {
     std::string cmd = "screencapture -x " + quote_shell_path(file);
-    return std::system(cmd.c_str()) == 0;
+    if (std::system(cmd.c_str()) != 0) {
+      return false;
+    }
+    return capture_full_screen() || crop_to_top_right_quadrant(file);
   }
 #endif
 
@@ -117,17 +169,20 @@ namespace screenshot {
     if (std::system("which import > /dev/null 2>&1") == 0) {
       std::string cmd = "import -window root " + target;
       if (std::system(cmd.c_str()) == 0) {
-        return true;
+        return capture_full_screen() || crop_to_bottom_right_quadrant(file);
       }
     }
     if (std::system("which spectacle > /dev/null 2>&1") == 0) {
       std::string cmd = "spectacle -f -b -n -o " + target;
       if (std::system(cmd.c_str()) == 0) {
-        return true;
+        return capture_full_screen() || crop_to_bottom_right_quadrant(file);
       }
     }
     std::string cmd = "gnome-screenshot -f " + target;
-    return std::system(cmd.c_str()) == 0;
+    if (std::system(cmd.c_str()) != 0) {
+      return false;
+    }
+    return capture_full_screen() || crop_to_bottom_right_quadrant(file);
   }
 #endif
 
@@ -159,6 +214,15 @@ namespace screenshot {
     if (width <= 0 || height <= 0) {
       std::cerr << "Desktop dimensions invalid" << std::endl;
       return false;
+    }
+
+    if (!capture_full_screen()) {
+      const int fullWidth = width;
+      const int fullHeight = height;
+      width = fullWidth / 2;
+      height = fullHeight / 2;
+      left += fullWidth - width;
+      top += fullHeight - height;
     }
 
     HDC hdcScreen = GetDC(nullptr);
@@ -237,10 +301,10 @@ namespace screenshot {
     // Add a delay to allow UI elements to render before capturing
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    if (output_root_ref().empty()) {
+    if (ScreenshotState::outputRoot().empty()) {
       return false;
     }
-    auto file = output_root_ref() / (name + ".png");
+    auto file = ScreenshotState::outputRoot() / (name + ".png");
 
 #ifdef __APPLE__
     return capture_macos(file, options);
